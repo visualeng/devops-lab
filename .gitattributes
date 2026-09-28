@@ -1,0 +1,7 @@
+# Скрипты и конфиги читаются линуксовыми инструментами: переводы строк
+# должны быть LF, иначе bash и Dockerfile не запустятся.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sql text eol=lf

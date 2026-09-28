@@ -1,0 +1,128 @@
+# Основной пайплайн: тесты → образ в GHCR → стенд с этим образом.
+#
+# Важная деталь: стенд поднимает не пересобранный локально образ, а тот,
+# что уже лежит в реестре, по digest. Проверяется артефакт, а не исходники.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.mod
+
+      - name: gofmt
+        if: runner.os == 'Linux'
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "не отформатировано: $unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test (-race)
+        run: go test -race -count=1 ./...
+
+      - name: govulncheck
+        if: runner.os == 'Linux'
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-buildx-action@v4
+
+      - name: логин в GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: метка времени сборки
+        run: echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      - name: сборка и отправка образа
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ./app
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:main
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILT_AT=${{ env.built_at }}
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+          provenance: mode=max
+          sbom: true
+
+  # Стенд: тянем образ из реестра по digest, поднимаем, проверяем дымом
+  staging:
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: логин в GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: скачать собранный образ
+        run: docker pull "${{ env.IMAGE }}@${{ needs.image.outputs.digest }}"
+
+      - name: поднять стенд
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: docker compose -f docker/compose.ci.yaml up --detach --wait --wait-timeout 60
+
+      - name: дымовая проверка
+        env:
+          BASE_URL: http://127.0.0.1:8080
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: ./scripts/smoke.sh
+
+      - name: логи стенда
+        if: failure()
+        run: docker compose -f docker/compose.ci.yaml logs
+
+      - name: остановить стенд
+        if: always()
+        run: docker compose -f docker/compose.ci.yaml down --volumes
