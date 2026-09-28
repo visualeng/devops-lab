@@ -1,0 +1,6 @@
+# В контекст сборки попадает только то, что нужно для go build.
+.git
+.gitignore
+Dockerfile
+.dockerignore
+*_test.go

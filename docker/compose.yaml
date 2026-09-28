@@ -1,0 +1,17 @@
+# Локальный стенд: docker compose up --build
+#
+# Тот же compose поднимается в CI (джоба staging): собранный образ
+# проходит проверку до того, как уедет на настоящий сервер.
+services:
+  app:
+    build:
+      context: ./app
+      args:
+        VERSION: local
+        COMMIT: local
+    image: devops-lab:local
+    environment:
+      ADDR: ":8080"
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
