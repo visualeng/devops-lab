@@ -49,6 +49,6 @@
 
 - name: Добавить пользователя деплоя в группу docker
   ansible.builtin.user:
-    name: "{{ deploy_user }}"
+    name: "{{ docker_deploy_user }}"
     groups: docker
     append: true

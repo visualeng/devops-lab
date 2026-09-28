@@ -26,7 +26,7 @@
 
 - name: Создать пользователя для деплоя
   ansible.builtin.user:
-    name: "{{ deploy_user }}"
+    name: "{{ base_deploy_user }}"
     groups: sudo
     append: true
     shell: /bin/bash
@@ -34,14 +34,14 @@
 
 - name: Положить ssh-ключ пользователю деплоя
   ansible.posix.authorized_key:
-    user: "{{ deploy_user }}"
-    key: "{{ deploy_ssh_public_key }}"
+    user: "{{ base_deploy_user }}"
+    key: "{{ base_ssh_public_key }}"
     state: present
 
 - name: Разрешить пользователю деплоя sudo без пароля
   ansible.builtin.copy:
-    dest: "/etc/sudoers.d/{{ deploy_user }}"
-    content: "{{ deploy_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    dest: "/etc/sudoers.d/{{ base_deploy_user }}"
+    content: "{{ base_deploy_user }} ALL=(ALL) NOPASSWD:ALL\n"
     owner: root
     group: root
     mode: "0440"
@@ -49,16 +49,16 @@
 
 - name: Создать каталог приложения
   ansible.builtin.file:
-    path: "{{ app_dir }}"
+    path: "{{ base_app_dir }}"
     state: directory
-    owner: "{{ deploy_user }}"
-    group: "{{ deploy_user }}"
+    owner: "{{ base_deploy_user }}"
+    group: "{{ base_deploy_user }}"
     mode: "0755"
 
 - name: Создать каталог состояния деплоя
   ansible.builtin.file:
-    path: "{{ app_dir }}/state"
+    path: "{{ base_app_dir }}/state"
     state: directory
-    owner: "{{ deploy_user }}"
-    group: "{{ deploy_user }}"
+    owner: "{{ base_deploy_user }}"
+    group: "{{ base_deploy_user }}"
     mode: "0755"

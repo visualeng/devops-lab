@@ -1,4 +1,4 @@
 ---
 app_repo_url: https://github.com/visualeng/devops-lab.git
 app_dir: /opt/devops-lab
-deploy_user: deploy
+app_deploy_user: "{{ base_deploy_user }}"
