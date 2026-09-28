@@ -51,22 +51,28 @@ push / pull request
 ## Что внутри
 
 ```
-app/                  сервис-подопытный на Go: healthz, info, дренирование
+app/                  сервис-подопытный на Go: healthz, info, work, метрики, логи, трейсы
 docker/compose.yaml   локальный стенд: собрать и поднять
 docker/compose.ci.yaml   стенд в CI: чужой образ по digest, ничего не собирает
 docker/compose.prod.yaml  прод: digest вместо тега, read-only, cap_drop, лимит логов
+docker/compose.observability.yaml  стек наблюдаемости: Loki, Tempo, Alloy, Grafana
 deploy/deploy.sh      деплой на сервере: pull по digest, up --wait, запись состояния
 deploy/rollback.sh    откат на предыдущий digest из истории
-scripts/smoke.sh      дымовая проверка: /healthz, /info, /metrics, 404 на неизвестный путь
+scripts/smoke.sh      дымовая проверка: /healthz, /info, /work, /metrics, 404 на мусор
 infra/terraform/      VPS как код: сервер, статический IP, файрвол
 infra/ansible/        роли base/docker/app: провижининг и деплой
 k8s/charts/           helm-чарт: деплой, Service, Ingress, HPA, PDB, NetworkPolicy
-observability/        конфиг и правила Prometheus, дашборд Grafana, runbook'и
+observability/prometheus/  метрики: recording-правила, алерты, SLO и бюджет ошибок
+observability/loki/   конфиг Loki: логи в одном процессе, хранение неделю
+observability/tempo/  конфиг Tempo: OTLP и span-метрики в Prometheus
+observability/alloy/  агент: читает логи контейнеров и шлёт их в Loki
+observability/grafana/  два дашборда (метрики и логи) и переходы трейс → логи
+observability/runbooks/  что делать, когда сработал алерт
 ```
 
 ## Сервис
 
-Четыре ручки и никакой базы — весь фокус на конвейере:
+Пять ручек и никакой базы — весь фокус на конвейере:
 
 ```console
 $ curl localhost:8080/healthz
@@ -77,6 +83,9 @@ $ curl localhost:8080/info
 
 $ curl localhost:8080/metrics | grep devops_lab_build_info
 devops_lab_build_info{commit="b8936c5c44f9a7b5ef582abab24df91907195bc6",version="main"} 1
+
+$ curl localhost:8080/work
+{"service":"devops-lab","slept_ms":25}
 ```
 
 `/info` отдаёт ровно тот коммит, который был в сборке образа, — этим
@@ -85,10 +94,27 @@ devops_lab_build_info{commit="b8936c5c44f9a7b5ef582abab24df91907195bc6",version=
 здоровье ключом `-healthcheck`: в финальном образе нет ни shell, ни curl,
 поэтому healthcheck выполняет бинарник.
 
+`/work` — искусственный «внешний» вызов с задержкой `WORK_DELAY_MS`.
+Смысл в нём один: внутри есть дочерний span, поэтому в Tempo видно дерево
+трейса, а не один серверный span, и есть на чём показать, где копится время.
+
 Метрики отдаёт сам сервис: счётчик запросов по маршрутам и кодам,
 гистограмма задержек и `devops_lab_build_info` с версией и коммитом.
 Метка маршрута берётся из шаблона `ServeMux` (`GET /healthz`), а не из
 пути запроса — иначе в метки попал бы каждый конкретный id.
+
+Логи пишутся в JSON, по строке на запрос, с полями `method`, `route`,
+`status`, `duration_ms` и без версии в каждой записи — она есть всегда:
+
+```console
+$ curl -s localhost:8080/info >/dev/null
+$ docker compose logs app | tail -1
+{"time":"2026-09-28T13:22:19Z","level":"INFO","msg":"request","service":"devops-lab","version":"main","commit":"b8936c5c...","method":"GET","route":"GET /info","status":200,"duration_ms":0.42}
+```
+
+Трейсы шлются в Tempo по OTLP, но только если задан адрес коллектора
+(`OTEL_EXPORTER_OTLP_ENDPOINT`). Без него сервис работает как ни в чём не
+бывало — стенд не должен падать из-за того, что Tempo ещё не поднят.
 
 ## Локальный запуск
 
@@ -99,11 +125,15 @@ $ docker compose -f docker/compose.yaml up --build
 $ ./scripts/smoke.sh
 ```
 
-Вместе с Prometheus и Grafana (дашборд подхватывается автоматически):
+Вместе со всем стеком наблюдаемости — Prometheus, Loki, Tempo, Alloy и
+Grafana (дашборды подхватываются автоматически):
 
 ```console
 $ docker compose -f docker/compose.yaml -f docker/compose.observability.yaml up
 ```
+
+Порты: Prometheus 9090, Loki 3100, Tempo 3200 (OTLP 4318), Alloy 12345,
+Grafana 3000 (`admin` / `admin`).
 
 Go, `gofmt` и `go vet` тоже проверяются без Docker:
 
@@ -143,6 +173,11 @@ $ cd app && go test -race ./... && go vet ./...
 - SBOM в формате CycloneDX сохраняется артефактом прогона;
 - образ подписывается cosign в keyless-режиме (OIDC) и тут же
   проверяется с явным identity и издателем.
+
+Гейт Trivy уже сработал на этом же проекте: при добавлении OTLP-экспортёра
+подтянулся `google.golang.org/grpc`, и сборка упала на CVE-2026-84445.
+Зависимость обновлена до исправленной версии — так это и должно выглядеть,
+когда сканирование не для галочки.
 
 ## Инфраструктура
 
@@ -193,8 +228,13 @@ $ helm upgrade --install devops-lab k8s/charts/devops-lab \
 
 ## Наблюдаемость
 
-Сервис сам отдаёт метрики в `/metrics`, `observability/prometheus` их
-разбирает, а правила превращают сырые выражения в читаемые:
+Три столпа — метрики, логи и трейсы — и все три собираются прямо из
+сервиса, без посредников.
+
+### Метрики
+
+Сервис отдаёт `/metrics`, `observability/prometheus` их разбирает, а
+правила превращают сырые выражения в читаемые:
 
 | Метрика                                   | Что означает                        |
 |-------------------------------------------|-------------------------------------|
@@ -205,16 +245,46 @@ $ helm upgrade --install devops-lab k8s/charts/devops-lab \
 ```promql
 job:devops_lab:http_error_ratio:rate5m        # доля 5xx
 job:devops_lab:request_duration_seconds:p95_5m # p95 задержек
+slo:devops_lab:success_ratio:rate1h           # SLI успешности
 ```
 
-Алерты в `observability/prometheus/rules.yml` (сервис недоступен, доля
-ошибок, высокий p95, подозрительная тишина в трафике, рестарты подов) умеют
-говорить, что делать: в каждом аннотации `runbook` ссылается на
-`observability/runbooks/*.md` — это те самые «сначала посмотри сюда, потом
-дергай деплой» шаги, которые обычно и отличают инженера от скрипта.
+### Логи
 
-Дашборд Grafana в `observability/grafana/dashboards/devops-lab.json`
-подхватывается провижинингом при подъёме стека наблюдаемости.
+Сервис пишет JSON в stdout, Alloy читает логи контейнеров и складывает их
+в Loki. Метки вроде `{app="devops-lab"}` появляются из имени контейнера,
+так что искать логи можно без всякой настройки:
+
+```logql
+{app="devops-lab"} | json | status >= 500
+{app="devops-lab"} | json | route="GET /work"
+{app="devops-lab"} | json | trace_id="<traceID>"
+```
+
+### Трейсы
+
+Сервис шлёт спаны по OTLP в Tempo, а Tempo считает по ним RED-метрики и
+граф сервисов и отдаёт их в Prometheus через remote write. Поэтому в Grafana
+работают переходы из трейса в логи и в метрики, а в дереве видно дочерний
+span `downstream.pricing` внутри `GET /work`.
+
+### SLO и бюджет ошибок
+
+Заявлен SLO 99% на успешность, то есть бюджет ошибок — 1% за окно. Расход
+бюджета считается многокоочно: быстрый (окна 1 час и 5 минут, кратность
+14.4) поднимает critical, медленный (6 часов и 30 минут, кратность 6) —
+warning. Так «много ошибок подряд» и «медленная протечка» не смешиваются
+в один алерт.
+
+### Алерты и runbook'и
+
+Алерты живут в `observability/prometheus/rules.yml`: сервис недоступен,
+доля ошибок, высокий p95, подозрительная тишина в трафике, рестарты подов,
+расход бюджета. В каждом аннотации `runbook` ссылается на
+`observability/runbooks/*.md` — это те самые «сначала посмотри сюда, потом
+дёргай деплой» шаги, которые обычно и отличают инженера от скрипта.
+
+Дашборды в `observability/grafana/dashboards/`: метрики (`devops-lab`) и
+логи (`devops-lab-logs`), оба подхватываются провижинингом.
 
 ## Проверки
 
@@ -226,6 +296,9 @@ job:devops_lab:request_duration_seconds:p95_5m # p95 задержек
 | `ansible`   | `--syntax-check` обоих плейбуков и `ansible-lint`            |
 | `helm`      | `helm lint` и `helm template` со всеми опциями включёнными   |
 | `prometheus`| `promtool check config` для конфига и правил                |
+| `loki`      | `loki -verify-config` на конфиге Loki                          |
+| `tempo`     | живой запуск Tempo и ожидание `/ready`                          |
+| `alloy`     | `alloy validate` на конфиге агента                              |
 
 ## Что дальше
 
