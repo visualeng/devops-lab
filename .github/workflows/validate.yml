@@ -106,7 +106,7 @@ jobs:
         run: |
           docker run --rm --entrypoint /usr/bin/loki \
             -v "$PWD/observability/loki:/etc/loki:ro" \
-            grafana/loki:v3.7.8 -config.file=/etc/loki/loki-config.yaml -verify-config=true
+            grafana/loki:3.7.8 -config.file=/etc/loki/loki-config.yaml -verify-config=true
 
   tempo:
     name: tempo config
@@ -118,7 +118,7 @@ jobs:
         run: |
           docker run --rm --entrypoint /tempo \
             -v "$PWD/observability/tempo:/etc/tempo:ro" \
-            grafana/tempo:v3.0.3 -config.file=/etc/tempo/tempo.yaml -config.verify
+            grafana/tempo:3.0.3 -config.file=/etc/tempo/tempo.yaml -config.verify
 
   alloy:
     name: alloy config

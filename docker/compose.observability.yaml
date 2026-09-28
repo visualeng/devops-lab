@@ -27,7 +27,7 @@ services:
     restart: unless-stopped
 
   loki:
-    image: grafana/loki:v3.7.8
+    image: grafana/loki:3.7.8
     command:
       - -config.file=/etc/loki/loki-config.yaml
     volumes:
@@ -38,7 +38,7 @@ services:
     restart: unless-stopped
 
   tempo:
-    image: grafana/tempo:v3.0.3
+    image: grafana/tempo:3.0.3
     command:
       - -config.file=/etc/tempo/tempo.yaml
     volumes:
