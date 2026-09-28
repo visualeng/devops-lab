@@ -1,0 +1,40 @@
+---
+# Копия репозитория нужна ради скриптов деплоя; сам образ приезжает
+# отдельно и уже по digest, поэтому версия кода здесь не важна.
+- name: Обновить копию репозитория на сервере
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.git:
+    repo: "{{ app_repo_url }}"
+    dest: "{{ app_dir }}"
+    force: true
+
+- name: Убедиться, что каталог состояния на месте
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.file:
+    path: "{{ app_dir }}/state"
+    state: directory
+    mode: "0755"
+
+- name: Задеплоить образ по digest
+  become: true
+  become_user: "{{ deploy_user }}"
+  ansible.builtin.command:
+    cmd: "./deploy/deploy.sh {{ image_ref }}"
+    chdir: "{{ app_dir }}"
+  register: deploy_result
+  changed_when: "'готово' in deploy_result.stdout"
+  when: image_ref | default('', true) | length > 0
+
+- name: Дождаться, пока стенд начнёт отвечать
+  become: false
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8080/healthz
+    status_code: 200
+    return_content: true
+  register: healthcheck
+  retries: 10
+  delay: 3
+  until: healthcheck is succeeded
+  when: image_ref | default('', true) | length > 0

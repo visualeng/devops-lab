@@ -1,0 +1,4 @@
+---
+deploy_user: deploy
+app_dir: /opt/devops-lab
+deploy_ssh_public_key: ""

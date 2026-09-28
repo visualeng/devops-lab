@@ -1,0 +1,11 @@
+---
+# Деплой на уже подготовленный сервер. Образ передаётся по digest:
+#   ansible-playbook playbooks/deploy.yml -e "image_ref=ghcr.io/...@sha256:..."
+# Без image_ref playbook только освежит код и ничего не перезапустит.
+- name: Задеплоить образ на стенд
+  hosts: staging
+  become: true
+  roles:
+    - role: app
+  vars:
+    image_ref: ""

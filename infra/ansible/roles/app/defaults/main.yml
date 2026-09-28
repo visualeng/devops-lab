@@ -1,0 +1,4 @@
+---
+app_repo_url: https://github.com/visualeng/devops-lab.git
+app_dir: /opt/devops-lab
+deploy_user: deploy
