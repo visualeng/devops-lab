@@ -1,5 +1,9 @@
-# Один инстанс Tempo с локальным хранилищем. Принимает OTLP с 4318 (http)
-# и 4317 (grpc) — туда сервис и сливает спаны.
+# Один инстанс Tempo (монолитный режим) с локальным хранилищем.
+# Принимает OTLP с 4318 (http) и 4317 (grpc) — туда сервис сливает спаны.
+#
+# В Tempo 3.x сборка блоков и уплотнение уехали в микросервисный режим,
+# поэтому блоков ingester/compactor здесь нет, а live-store сам
+# раздаёт свежие трейсы на запросы.
 stream_over_http_enabled: true
 
 server:
@@ -15,19 +19,9 @@ distributor:
         grpc:
           endpoint: 0.0.0.0:4317
 
-ingester:
-  # В стенде блоки собираются быстро: иначе трейсы появляются в Tempo
-  # получасами, и демонстрация превращается в ожидание.
-  max_block_duration: 5m
-  trace_idle_period: 10s
-
-compactor:
-  compaction:
-    block_retention: 24h
-
-# Генератор span-метрик: по трейсам Tempo считает RED-метрики и граф
-# сервисов, и отдаёт их в Prometheus через remote write. Из-за этого
-# в Grafana работают «traces to metrics» и карта сервисов.
+# Генератор span-метрик: по трейсам считает RED-метрики и граф сервисов,
+# затем отдаёт их в Prometheus через remote write. Из-за этого в Grafana
+# работают «traces to metrics» и карта сервисов.
 metrics_generator:
   registry:
     external_labels:
@@ -38,9 +32,8 @@ metrics_generator:
     remote_write:
       - url: http://prometheus:9090/api/v1/write
         send_exemplars: true
-  traces_storage:
-    path: /var/tempo/generator/traces
 
+# Процессоры по умолчанию выключены, их включают именно в overrides
 overrides:
   defaults:
     metrics_generator:
