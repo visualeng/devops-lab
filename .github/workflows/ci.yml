@@ -135,7 +135,12 @@ jobs:
       - name: проверка подписи
         env:
           IMAGE_REF: ${{ env.IMAGE }}@${{ needs.image.outputs.digest }}
-        run: cosign verify "${IMAGE_REF}"
+        run: |
+          # В keyless-режиме cosign обязан знать, чью подпись и от какого
+          # издателя он ждёт, иначе принимает любую.
+          cosign verify "${IMAGE_REF}" \
+            --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/ci\.yml@refs/heads/.*" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 
   # Стенд: тянем образ из реестра по digest, поднимаем, проверяем дымом.
   # Зависит ещё и от security — уязвимый образ до стенда не доходит.
