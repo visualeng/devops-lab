@@ -57,16 +57,16 @@ docker/compose.ci.yaml   стенд в CI: чужой образ по digest, н
 docker/compose.prod.yaml  прод: digest вместо тега, read-only, cap_drop, лимит логов
 deploy/deploy.sh      деплой на сервере: pull по digest, up --wait, запись состояния
 deploy/rollback.sh    откат на предыдущий digest из истории
-scripts/smoke.sh      дымовая проверка: /healthz, /info, 404 на неизвестный путь
-infra/terraform/      VPS как код: сеть, диск, firewall, ssh-ключ  (этап 2)
-infra/ansible/        провижининг и деплой на сервере               (этап 2)
-k8s/                  chart/kustomize и ArgoCD-подготовка             (этап 3)
-observability/        Prometheus-алерты, дашборд, runbook            (этап 3)
+scripts/smoke.sh      дымовая проверка: /healthz, /info, /metrics, 404 на неизвестный путь
+infra/terraform/      VPS как код: сервер, статический IP, файрвол
+infra/ansible/        роли base/docker/app: провижининг и деплой
+k8s/charts/           helm-чарт: деплой, Service, Ingress, HPA, PDB, NetworkPolicy
+observability/        конфиг и правила Prometheus, дашборд Grafana, runbook'и
 ```
 
 ## Сервис
 
-Три ручки и никакой базы — весь фокус на конвейере:
+Четыре ручки и никакой базы — весь фокус на конвейере:
 
 ```console
 $ curl localhost:8080/healthz
@@ -74,6 +74,9 @@ $ curl localhost:8080/healthz
 
 $ curl localhost:8080/info
 {"builtAt":"2026-09-28T11:40:56Z","commit":"b8936c5c44f9a7b5ef582abab24df91907195bc6","service":"devops-lab","version":"main"}
+
+$ curl localhost:8080/metrics | grep devops_lab_build_info
+devops_lab_build_info{commit="b8936c5c44f9a7b5ef582abab24df91907195bc6",version="main"} 1
 ```
 
 `/info` отдаёт ровно тот коммит, который был в сборке образа, — этим
@@ -82,6 +85,11 @@ $ curl localhost:8080/info
 здоровье ключом `-healthcheck`: в финальном образе нет ни shell, ни curl,
 поэтому healthcheck выполняет бинарник.
 
+Метрики отдаёт сам сервис: счётчик запросов по маршрутам и кодам,
+гистограмма задержек и `devops_lab_build_info` с версией и коммитом.
+Метка маршрута берётся из шаблона `ServeMux` (`GET /healthz`), а не из
+пути запроса — иначе в метки попал бы каждый конкретный id.
+
 ## Локальный запуск
 
 Нужен только Docker:
@@ -89,6 +97,12 @@ $ curl localhost:8080/info
 ```console
 $ docker compose -f docker/compose.yaml up --build
 $ ./scripts/smoke.sh
+```
+
+Вместе с Prometheus и Grafana (дашборд подхватывается автоматически):
+
+```console
+$ docker compose -f docker/compose.yaml -f docker/compose.observability.yaml up
 ```
 
 Go, `gofmt` и `go vet` тоже проверяются без Docker:
@@ -130,11 +144,93 @@ $ cd app && go test -race ./... && go vet ./...
 - образ подписывается cosign в keyless-режиме (OIDC) и тут же
   проверяется с явным identity и издателем.
 
+## Инфраструктура
+
+Terraform (`infra/terraform`) описывает стенд целиком: сервер, статический
+IP, чтобы пересоздание машины не меняло точку входа, и облачный файрвол,
+где ssh открыт только с перечисленных адресов, а наружу — 80 и 443.
+
+```console
+$ cd infra/terraform
+$ cp terraform.tfvars.example terraform.tfvars   # адреса в git не кладём
+$ terraform init && terraform plan -out=tfplan
+$ terraform apply tfplan
+```
+
+Ansible (`infra/ansible`) готовит сервер после того, как тот создан:
+пользователь для деплоя с sudo без пароля, автообновления безопасности,
+fail2ban, docker с ограниченными логами и копия этого репозитория.
+
+```console
+$ cd infra/ansible
+$ DEPLOY_HOST=203.0.113.10 ansible-playbook playbooks/provision.yml \
+    -e base_ssh_public_key="$(cat ~/.ssh/id_ed25519.pub)"
+```
+
+Роли разделены по смыслу: `base` (пользователи и базовые пакеты),
+`docker` (репозиторий и демон), `app` (копия репозитория и запуск
+`deploy/deploy.sh`). Переменные ролей с префиксами (`base_*`, `app_*`,
+`docker_*`) — этого требует ansible-lint, и заодно видно, кто какую
+переменную объявил.
+
+## Kubernetes
+
+`k8s/charts/devops-lab` — helm-чарт с безопасными значениями по умолчанию:
+поды непривилегированные, read-only корень, `cap_drop: ALL`, ограничены
+ресурсы, liveness/readiness/startup бьют в `/healthz`, рядом HPA, PDB и
+NetworkPolicy, который пускает к сервису только ingress-контроллер и
+Prometheus.
+
+```console
+$ helm upgrade --install devops-lab k8s/charts/devops-lab \
+    --set image.digest=sha256:... --set ingress.enabled=true
+```
+
+Образ задаётся по digest, а не тегом: тег `main` уезжает под новым
+коммитом, digest остаётся с этим образом навсегда. `ServiceMonitor`
+выключен по умолчанию — без Prometheus Operator в кластере установка с ним
+не прошла бы.
+
+## Наблюдаемость
+
+Сервис сам отдаёт метрики в `/metrics`, `observability/prometheus` их
+разбирает, а правила превращают сырые выражения в читаемые:
+
+| Метрика                                   | Что означает                        |
+|-------------------------------------------|-------------------------------------|
+| `devops_lab_http_requests_total`          | запросы по маршруту и коду ответа    |
+| `devops_lab_http_request_duration_seconds` | задержки, из них считается p95       |
+| `devops_lab_build_info`                   | версия и коммит запущенного кода     |
+
+```promql
+job:devops_lab:http_error_ratio:rate5m        # доля 5xx
+job:devops_lab:request_duration_seconds:p95_5m # p95 задержек
+```
+
+Алерты в `observability/prometheus/rules.yml` (сервис недоступен, доля
+ошибок, высокий p95, подозрительная тишина в трафике, рестарты подов) умеют
+говорить, что делать: в каждом аннотации `runbook` ссылается на
+`observability/runbooks/*.md` — это те самые «сначала посмотри сюда, потом
+дергай деплой» шаги, которые обычно и отличают инженера от скрипта.
+
+Дашборд Grafana в `observability/grafana/dashboards/devops-lab.json`
+подхватывается провижинингом при подъёме стека наблюдаемости.
+
+## Проверки
+
+`validate.yml` гоняет то, что нельзя проверить обычными тестами:
+
+| Джоба     | Что делает                                                  |
+|-----------|-------------------------------------------------------------|
+| `terraform` | `fmt -check`, `init -backend=false`, `validate`             |
+| `ansible`   | `--syntax-check` обоих плейбуков и `ansible-lint`            |
+| `helm`      | `helm lint` и `helm template` со всеми опциями включёнными   |
+| `prometheus`| `promtool check config` для конфига и правил                |
+
 ## Что дальше
 
-- [ ] **этап 2** — Terraform (VPS: сеть, диск, firewall, ssh-ключ) и
-      Ansible (пользователи, docker, репозиторий на сервере, бэкапы)
-- [ ] **этап 3** — k8s-манифесты: chart или kustomize, ArgoCD-ready,
-      Prometheus-алерты и runbook
 - [ ] релиз по тегам с changelog и semver
+- [ ] ArgoCD-приложение для чарта, чтобы деплой шёл через git
+- [ ] бэкап состояния стенда и проверка восстановления
 - [ ] ночные сборки и проверка образа на устаревание базовых слоёв
+- [ ] TLS terminates на реальном домене (сейчас ingress выключен)
