@@ -1,0 +1,25 @@
+# Прод-стенд: образ закреплён по digest (тег может переехать под новым
+# коммитом, digest — нет), контейнер без лишних прав, логи ограничены.
+#
+# Локально поднимается тем же файлом:
+#   IMAGE=ghcr.io/visualeng/devops-lab DIGEST=sha256:... \
+#     docker compose -f docker/compose.prod.yaml up -d
+services:
+  app:
+    image: ${IMAGE:?укажите IMAGE}@${DIGEST:?укажите DIGEST}
+    environment:
+      ADDR: ":8080"
+    # наружу контейнер не смотрит: вход — через обратный прокси на хосте
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
