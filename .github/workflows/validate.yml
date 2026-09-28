@@ -88,8 +88,10 @@ jobs:
       - uses: actions/checkout@v5
 
       # promtool живёт внутри официального образа: тянуть его отдельно
-      # на раннер не нужно.
+      # на раннер не нужно. Entrypoint образа — сам prometheus, поэтому
+      # переопределяем его на promtool.
       - name: конфиг и правила
         run: |
-          docker run --rm -v "$PWD/observability/prometheus:/etc/prometheus:ro" \
-            prom/prometheus:v3.15.0 promtool check config /etc/prometheus/prometheus.yml
+          docker run --rm --entrypoint /bin/promtool \
+            -v "$PWD/observability/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v3.15.0 check config /etc/prometheus/prometheus.yml
