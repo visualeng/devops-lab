@@ -114,11 +114,33 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Отдельного флага проверки конфига в Tempo 3.x нет, поэтому проверяем
+      # по-живому: поднимаем, ждём /ready, гасим. Заодно видно, что конфиг
+      # не просто парсится, а реально стартует.
       - name: конфиг Tempo
         run: |
-          docker run --rm --entrypoint /tempo \
+          docker run --detach --name tempo-check --publish 3200:3200 \
+            --entrypoint /tempo \
             -v "$PWD/observability/tempo:/etc/tempo:ro" \
-            grafana/tempo:3.0.3 -config.file=/etc/tempo/tempo.yaml -config.verify
+            grafana/tempo:3.0.3 -config.file=/etc/tempo/tempo.yaml
+          trap 'docker rm -f tempo-check >/dev/null' EXIT
+
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://localhost:3200/ready >/dev/null; then
+              echo "tempo готов"
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' tempo-check)" != "true" ]; then
+              echo "tempo упал на старте:"
+              docker logs tempo-check
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "tempo не поднялся за 30 секунд:"
+          docker logs tempo-check
+          exit 1
 
   alloy:
     name: alloy config
