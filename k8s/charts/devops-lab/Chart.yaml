@@ -1,0 +1,12 @@
+apiVersion: v2
+name: devops-lab
+description: Стенд DevOps: маленький сервис и всё, что вокруг него
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - devops
+  - lab
+home: https://github.com/visualeng/devops-lab
+sources:
+  - https://github.com/visualeng/devops-lab

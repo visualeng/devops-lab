@@ -1,0 +1,102 @@
+# Значения по умолчанию — безопасные: поды непривилегированные, ресурсы
+# ограничены, образ приходит по digest.
+replicaCount: 2
+
+image:
+  # Ссылаться нужно на digest, а не на тег: тег main уезжает под новым
+  # коммитом, digest — навсегда с этим образом.
+  repository: ghcr.io/visualeng/devops-lab
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: nginx
+  host: devops-lab.example.com
+  tls:
+    enabled: true
+    secretName: devops-lab-tls
+
+# Probes бьют в /healthz, который проверяет сам бинарник контейнера.
+# startupProbe даёт медленному старту место, не убивая под по liveness.
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    path: /healthz
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  startup:
+    path: /healthz
+    periodSeconds: 5
+    failureThreshold: 12
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    # Сервис без базы: ему хватает десятков мегабайт, лимит нужен,
+    # чтобы кривой под не съел ноду.
+    memory: 64Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  # К сервису пускаем только ingress-контроллер и метрики Prometheus.
+  allowedNamespaces:
+    - ingress-nginx
+    - monitoring
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+serviceMonitor:
+  # Нужен Prometheus Operator. Выключен по умолчанию: без CRD в кластере
+  # helm install с ним не пройдёт.
+  enabled: false
+  interval: 30s
+  labels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}

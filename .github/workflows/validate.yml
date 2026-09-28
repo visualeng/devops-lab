@@ -55,3 +55,41 @@ jobs:
 
       - name: ansible-lint
         run: ansible-lint
+
+  helm:
+    name: helm lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: k8s/charts/devops-lab
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/setup-helm@v5.0.1
+
+      - name: helm lint
+        run: helm lint .
+
+      # Рендерим с включёнными необязательными блоками: по умолчанию они
+      # выключены, и ошибка в них иначе всплыла бы только на проде.
+      - name: helm template со всеми опциями
+        run: |
+          helm template staging . \
+            --set image.digest=sha256:1111111111111111111111111111111111111111111111111111111111111111 \
+            --set ingress.enabled=true \
+            --set serviceMonitor.enabled=true \
+            --set networkPolicy.enabled=true \
+            --set autoscaling.enabled=true
+
+  prometheus:
+    name: prometheus config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # promtool живёт внутри официального образа: тянуть его отдельно
+      # на раннер не нужно.
+      - name: конфиг и правила
+        run: |
+          docker run --rm -v "$PWD/observability/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v3.15.0 promtool check config /etc/prometheus/prometheus.yml

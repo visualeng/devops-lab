@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 func TestHealthz(t *testing.T) {
-	rec := httptest.NewRecorder()
-	newHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	rec := newRecorder()
+	newHandler().ServeHTTP(rec, request(http.MethodGet, "/healthz"))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("код %d, ждали 200", rec.Code)
@@ -25,8 +26,8 @@ func TestInfoReportsBuildMetadata(t *testing.T) {
 
 	version, commit = "1.2.3", "abc1234"
 
-	rec := httptest.NewRecorder()
-	newHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/info", nil))
+	rec := newRecorder()
+	newHandler().ServeHTTP(rec, request(http.MethodGet, "/info"))
 
 	body := decode(t, rec)
 	if body["service"] != serviceName {
@@ -38,8 +39,8 @@ func TestInfoReportsBuildMetadata(t *testing.T) {
 }
 
 func TestRootOnlyMatchesExactPath(t *testing.T) {
-	rec := httptest.NewRecorder()
-	newHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
+	rec := newRecorder()
+	newHandler().ServeHTTP(rec, request(http.MethodGet, "/nope"))
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("код %d, ждали 404", rec.Code)
@@ -64,7 +65,7 @@ func TestCheckHealth(t *testing.T) {
 	}
 
 	if err := checkHealth("http://127.0.0.1:1/healthz"); err == nil {
-		t.Fatal("недоступный порт должен падать на healthcheck")
+		t.Fatal("доступный порт должен падать на healthcheck")
 	}
 }
 
@@ -80,6 +81,18 @@ func TestHealthURL(t *testing.T) {
 			t.Errorf("healthURL(%q) = %q, ждали %q", addr, got, want)
 		}
 	}
+}
+
+func request(method, path string) *http.Request {
+	return httptest.NewRequest(method, path, nil)
+}
+
+func newRecorder() *httptest.ResponseRecorder {
+	return httptest.NewRecorder()
+}
+
+func contains(haystack, needle string) bool {
+	return strings.Contains(haystack, needle)
 }
 
 func decode(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {

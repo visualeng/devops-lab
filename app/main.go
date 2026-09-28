@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Проставляются линкером при сборке образа, см. app/Dockerfile.
@@ -42,7 +44,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           newHandler(),
+		Handler:           instrument(newHandler()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -100,9 +102,12 @@ func newHandler() http.Handler {
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": serviceName,
-			"message": "лаборатория DevOps: /healthz, /info",
+			"message": "лаборатория DevOps: /healthz, /info, /metrics",
 		})
 	})
+
+	// Метрики для Prometheus: счётчики, гистограмма и информация о сборке.
+	mux.Handle("GET /metrics", promhttp.Handler())
 
 	return mux
 }

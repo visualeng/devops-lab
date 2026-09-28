@@ -1,0 +1,85 @@
+# Правила по метрикам самого сервиса: devops_lab_*.
+# Сначала recording-правила (сырые выражения в алертах нечитаемы),
+# потом алерты на их основе.
+
+groups:
+  - name: devops-lab-recording
+    interval: 30s
+    rules:
+      - record: job:devops_lab:http_requests:rate5m
+        expr: sum by (handler) (rate(devops_lab_http_requests_total[5m]))
+
+      - record: job:devops_lab:http_5xx:rate5m
+        expr: sum(rate(devops_lab_http_requests_total{code=~"5.."}[5m]))
+
+      # Доля ошибок: деление защищено снизу, иначе при нуле запросов
+      # получим NaN и алерт будет срабатывать на пустом графике.
+      - record: job:devops_lab:http_error_ratio:rate5m
+        expr: |
+          job:devops_lab:http_5xx:rate5m
+            / clamp_min(sum(rate(devops_lab_http_requests_total[5m])), 0.001)
+
+      - record: job:devops_lab:request_duration_seconds:p95_5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(devops_lab_http_request_duration_seconds_bucket[5m]))
+          )
+
+  - name: devops-lab-alerts
+    rules:
+      - alert: DevopsLabDown
+        expr: up{job="devops-lab"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: devops-lab
+        annotations:
+          summary: "devops-lab не отвечает"
+          description: "Цель {{ $labels.instance }} недоступна дольше двух минут."
+          runbook: "observability/runbooks/service-down.md"
+
+      - alert: DevopsLabHighErrorRate
+        expr: job:devops_lab:http_error_ratio:rate5m > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: devops-lab
+        annotations:
+          summary: "Доля ответов 5xx выше 5%"
+          description: "Последние 10 минут доля 5xx равна {{ $value | humanizePercentage }}."
+          runbook: "observability/runbooks/high-error-rate.md"
+
+      - alert: DevopsLabHighLatency
+        expr: job:devops_lab:request_duration_seconds:p95_5m > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: devops-lab
+        annotations:
+          summary: "Медиана p95 задержек выше 500 мс"
+          description: "p95 запросов {{ $value | humanizeDuration }}."
+
+      - alert: DevopsLabNoTraffic
+        # Тишина в графике чаще всего означает, что до сервиса никто не
+        # дошёл: сломан ingress или Service выбрасывает трафик.
+        expr: absent(devops_lab_http_requests_total) or sum(rate(devops_lab_http_requests_total[15m])) == 0
+        for: 30m
+        labels:
+          severity: info
+          service: devops-lab
+        annotations:
+          summary: "На сервис не ходит ни один запрос"
+          description: "Метрики есть, но трафика нет дольше получаса."
+          runbook: "observability/runbooks/service-down.md"
+
+      # Требует kube-state-metrics: в compose-стенде этот алерт молчит.
+      - alert: DevopsLabPodRestarts
+        expr: increase(kube_pod_container_status_restarts_total{container="app"}[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+          service: devops-lab
+        annotations:
+          summary: "Под перезапускается"
+          description: "Под {{ $labels.pod }} перезапустился {{ $value }} раз за 15 минут."

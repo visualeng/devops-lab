@@ -31,4 +31,10 @@ code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/")"
 code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/nope")"
 [ "${code}" = "404" ] || fail "неизвестный путь вернул ${code} вместо 404"
 
+# Метрики тоже часть сервиса: если /metrics исчез, Prometheus молча
+# перестанет видеть стенд.
+metrics="$(curl -fsS --max-time 5 "${BASE_URL}/metrics")" || fail "не дождались /metrics"
+echo "${metrics}" | grep -q 'devops_lab_build_info' \
+	|| fail "в /metrics нет devops_lab_build_info"
+
 echo "smoke: ок"
