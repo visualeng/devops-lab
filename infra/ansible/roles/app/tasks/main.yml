@@ -1,12 +1,13 @@
 ---
 # Копия репозитория нужна ради скриптов деплоя; сам образ приезжает
 # отдельно и уже по digest, поэтому версия кода здесь не важна.
-- name: Обновить копию репозитория на сервере
+- name: Обновить копию репозитория на сервере  # noqa: latest[git]
   become: true
   become_user: "{{ app_deploy_user }}"
   ansible.builtin.git:
     repo: "{{ app_repo_url }}"
     dest: "{{ app_dir }}"
+    version: "{{ app_version }}"
     force: true
   register: app_repo_update
   changed_when: "'Already up to date' not in (app_repo_update.stdout | default(''))"

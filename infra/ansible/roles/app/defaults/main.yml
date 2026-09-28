@@ -2,3 +2,7 @@
 app_repo_url: https://github.com/visualeng/devops-lab.git
 app_dir: /opt/devops-lab
 app_deploy_user: "{{ base_deploy_user }}"
+
+# Ветку, а не тег: копия репозитория нужна только ради скриптов деплоя,
+# сам образ приезжает отдельно и строго по digest.
+app_version: main
