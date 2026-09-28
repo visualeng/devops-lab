@@ -108,10 +108,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: установить cosign
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: сканирование образа
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE }}@${{ needs.image.outputs.digest }}
           format: table
