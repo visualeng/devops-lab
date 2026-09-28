@@ -1,0 +1,17 @@
+# сборки сервиса
+bin/
+dist/
+*.exe
+
+# локальное окружение и секреты
+.env
+.env.*
+!.env.example
+*.local
+
+# журналы и временное
+*.log
+tmp/
+.terraform/
+*.tfstate
+*.tfstate.*
