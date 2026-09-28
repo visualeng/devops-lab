@@ -1,0 +1,53 @@
+// Grafana Alloy: собирает логи контейнеров и отправляет их в Loki.
+// Promtail уже в зачаточном состоянии, агентом де-факто стал Alloy.
+
+logging {
+	level  = "info"
+	format = "logfmt"
+}
+
+// Список контейнеров через docker socket
+discovery.docker "containers" {
+	host             = "unix:///var/run/docker.sock"
+	refresh_interval = "5s"
+}
+
+// Имя контейнера вида /devops-lab-app-1 превращаем в метки,
+// по которым потом ищем логи: {app="devops-lab"}
+discovery.relabel "logs" {
+	targets = discovery.docker.containers.targets
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)-app-\\d+"
+		target_label  = "app"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)-app-\\d+"
+		target_label  = "service"
+	}
+
+	rule {
+		target_label = "job"
+		replacement  = "devops-lab"
+	}
+
+	rule {
+		target_label = "env"
+		replacement  = "lab"
+	}
+}
+
+loki.source.docker "containers" {
+	host       = "unix:///var/run/docker.sock"
+	targets    = discovery.relabel.logs.output
+	forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}

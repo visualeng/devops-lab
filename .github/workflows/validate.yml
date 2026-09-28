@@ -95,3 +95,39 @@ jobs:
           docker run --rm --entrypoint /bin/promtool \
             -v "$PWD/observability/prometheus:/etc/prometheus:ro" \
             prom/prometheus:v3.15.0 check config /etc/prometheus/prometheus.yml
+
+  loki:
+    name: loki config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: конфиг Loki
+        run: |
+          docker run --rm --entrypoint /usr/bin/loki \
+            -v "$PWD/observability/loki:/etc/loki:ro" \
+            grafana/loki:v3.7.8 -config.file=/etc/loki/loki-config.yaml -verify-config=true
+
+  tempo:
+    name: tempo config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: конфиг Tempo
+        run: |
+          docker run --rm --entrypoint /tempo \
+            -v "$PWD/observability/tempo:/etc/tempo:ro" \
+            grafana/tempo:v3.0.3 -config.file=/etc/tempo/tempo.yaml -config.verify
+
+  alloy:
+    name: alloy config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: конфиг Alloy
+        run: |
+          docker run --rm --entrypoint /bin/alloy \
+            -v "$PWD/observability/alloy:/etc/alloy:ro" \
+            grafana/alloy:v1.20.0 validate /etc/alloy/config.alloy

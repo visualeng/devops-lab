@@ -26,6 +26,31 @@ groups:
             sum by (le) (rate(devops_lab_http_request_duration_seconds_bucket[5m]))
           )
 
+  - name: devops-lab-slo
+    interval: 30s
+    rules:
+      # SLI: доля ответов, которые не 5xx. SLO заявлен на 99%,
+      # значит бюджет ошибок — 1% за окно.
+      - record: slo:devops_lab:success_ratio:rate5m
+        expr: |
+          sum(rate(devops_lab_http_requests_total{code!~"5.."}[5m]))
+            / clamp_min(sum(rate(devops_lab_http_requests_total[5m])), 0.001)
+
+      - record: slo:devops_lab:success_ratio:rate30m
+        expr: |
+          sum(rate(devops_lab_http_requests_total{code!~"5.."}[30m]))
+            / clamp_min(sum(rate(devops_lab_http_requests_total[30m])), 0.001)
+
+      - record: slo:devops_lab:success_ratio:rate1h
+        expr: |
+          sum(rate(devops_lab_http_requests_total{code!~"5.."}[1h]))
+            / clamp_min(sum(rate(devops_lab_http_requests_total[1h])), 0.001)
+
+      - record: slo:devops_lab:success_ratio:rate6h
+        expr: |
+          sum(rate(devops_lab_http_requests_total{code!~"5.."}[6h]))
+            / clamp_min(sum(rate(devops_lab_http_requests_total[6h])), 0.001)
+
   - name: devops-lab-alerts
     rules:
       - alert: DevopsLabDown
@@ -50,19 +75,9 @@ groups:
           description: "Последние 10 минут доля 5xx равна {{ $value | humanizePercentage }}."
           runbook: "observability/runbooks/high-error-rate.md"
 
-      - alert: DevopsLabHighLatency
-        expr: job:devops_lab:request_duration_seconds:p95_5m > 0.5
-        for: 10m
-        labels:
-          severity: warning
-          service: devops-lab
-        annotations:
-          summary: "Медиана p95 задержек выше 500 мс"
-          description: "p95 запросов {{ $value | humanizeDuration }}."
-
+      # Тишина в графике чаще всего означает, что до сервиса никто не
+      # дошёл: сломан ingress или Service выбрасывает трафик.
       - alert: DevopsLabNoTraffic
-        # Тишина в графике чаще всего означает, что до сервиса никто не
-        # дошёл: сломан ingress или Service выбрасывает трафик.
         expr: absent(devops_lab_http_requests_total) or sum(rate(devops_lab_http_requests_total[15m])) == 0
         for: 30m
         labels:
@@ -83,3 +98,48 @@ groups:
         annotations:
           summary: "Под перезапускается"
           description: "Под {{ $labels.pod }} перезапустился {{ $value }} раз за 15 минут."
+
+  - name: devops-lab-budget
+    # Правила по бюджету ошибок: чем быстрее он тратится, тем скорее
+    # кончится. Пороги — кратность нормы (1% при SLO 99%):
+    # 14.4x за час съедает месячный бюджет за двое суток,
+    # 6x за шесть часов — за неделю.
+    rules:
+      - alert: DevopsLabErrorBudgetFastBurn
+        expr: |
+          slo:devops_lab:success_ratio:rate1h < (1 - 14.4 * 0.01)
+            and
+            slo:devops_lab:success_ratio:rate5m < (1 - 14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          service: devops-lab
+        annotations:
+          summary: "Бюджет ошибок расходуется в 14.4 раза быстрее нормы"
+          description: "SLO 99%, окна 1 час и 5 минут. Текущий SLI: {{ $value | humanizePercentage }}."
+          runbook: "observability/runbooks/high-error-rate.md"
+
+      - alert: DevopsLabErrorBudgetSlowBurn
+        expr: |
+          slo:devops_lab:success_ratio:rate6h < (1 - 6 * 0.01)
+            and
+            slo:devops_lab:success_ratio:rate30m < (1 - 6 * 0.01)
+        for: 15m
+        labels:
+          severity: warning
+          service: devops-lab
+        annotations:
+          summary: "Бюджет ошибок расходуется в 6 раз быстрее нормы"
+          description: "SLO 99%, окна 6 часов и 30 минут."
+          runbook: "observability/runbooks/high-error-rate.md"
+
+      - alert: DevopsLabSlowResponse
+        expr: job:devops_lab:request_duration_seconds:p95_5m > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: devops-lab
+        annotations:
+          summary: "p95 задержек выше 500 мс"
+          description: "Смотреть трейсы: observability/runbooks/slow-response.md"
+          runbook: "observability/runbooks/slow-response.md"

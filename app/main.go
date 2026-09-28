@@ -1,6 +1,6 @@
 // Command app — крошечный сервис, который разворачивает лаборатория.
 // Он специально простой: весь интерес репозитория в том, что происходит
-// с ним дальше — образ, сканирование, стенд, деплой.
+// с ним дальше — образ, сканирование, стенд, деплой, метрики, логи и трейсы.
 package main
 
 import (
@@ -13,11 +13,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Проставляются линкером при сборке образа, см. app/Dockerfile.
@@ -34,17 +36,30 @@ func main() {
 	healthOnly := flag.Bool("healthcheck", false, "проверить собственный /healthz и выйти")
 	flag.Parse()
 
+	logger := newLogger(os.Stdout)
+	slog.SetDefault(logger)
+
 	if *healthOnly {
 		if err := checkHealth(healthURL(addr)); err != nil {
-			slog.Error("healthcheck failed", "error", err)
+			logger.Error("healthcheck failed", "error", err)
 			os.Exit(1)
 		}
 		return
 	}
 
+	shutdownTracing, err := setupTracing(context.Background())
+	if err != nil {
+		logger.Error("tracing setup failed", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("tracing ready")
+
+	// Порядок обёрток: снаружи трейсинг (чтобы в логах был trace_id),
+	// потом метрики с переименованием span, потом access-лог.
+	handler := traceHandler(instrument(logRequests(newHandler(), logger)))
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           instrument(newHandler()),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -55,7 +70,7 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("listening", "addr", addr, "version", version, "commit", commit)
+		logger.Info("listening", "addr", addr, "built_at", buildTime)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -65,11 +80,11 @@ func main() {
 	select {
 	case err := <-errCh:
 		if err != nil {
-			slog.Error("server stopped", "error", err)
+			logger.Error("server stopped", "error", err)
 			os.Exit(1)
 		}
 	case sig := <-stop:
-		slog.Info("shutdown signal, draining", "signal", sig.String())
+		logger.Info("shutdown signal, draining", "signal", sig.String())
 	}
 
 	// Дренирование: даём текущим запросам дописать, но не залипаем вечно —
@@ -77,10 +92,16 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
-		slog.Error("shutdown failed", "error", err)
+		logger.Error("shutdown failed", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("stopped cleanly")
+
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer flushCancel()
+	if err := shutdownTracing(flushCtx); err != nil {
+		logger.Error("flush traces", "error", err)
+	}
+	logger.Info("stopped cleanly")
 }
 
 func newHandler() http.Handler {
@@ -99,10 +120,32 @@ func newHandler() http.Handler {
 		})
 	})
 
+	// Ручка для трейсов: внутри живёт дочерний span «downstream.pricing».
+	// Так в Tempo видно, где именно копится время, а не только «запрос был».
+	mux.HandleFunc("GET /work", func(w http.ResponseWriter, r *http.Request) {
+		delay := workDelay()
+
+		_, span := tracer().Start(r.Context(), "downstream.pricing")
+		span.SetAttributes(
+			attribute.String("downstream.name", "pricing"),
+			attribute.Int64("downstream.delay_ms", delay.Milliseconds()),
+		)
+		time.Sleep(delay)
+		span.End()
+
+		logger := slog.Default()
+		logger.Info("downstream call", "downstream", "pricing", "delay_ms", delay.Milliseconds())
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"service":  serviceName,
+			"slept_ms": delay.Milliseconds(),
+		})
+	})
+
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": serviceName,
-			"message": "лаборатория DevOps: /healthz, /info, /metrics",
+			"message": "лаборатория DevOps: /healthz, /info, /work, /metrics",
 		})
 	})
 
@@ -145,6 +188,23 @@ func healthURL(addr string) string {
 		host = "127.0.0.1"
 	}
 	return "http://" + net.JoinHostPort(host, port) + "/healthz"
+}
+
+// workDelay — искусственная задержка «внешнего» вызова, чтобы было что
+// смотреть в трейсах и на графике задержек.
+func workDelay() time.Duration {
+	const fallback = 25 * time.Millisecond
+	const limit = 5 * time.Second
+
+	ms, err := strconv.Atoi(strings.TrimSpace(os.Getenv("WORK_DELAY_MS")))
+	if err != nil {
+		return fallback
+	}
+	delay := time.Duration(ms) * time.Millisecond
+	if delay < 0 || delay > limit {
+		return fallback
+	}
+	return delay
 }
 
 func envOr(name, fallback string) string {

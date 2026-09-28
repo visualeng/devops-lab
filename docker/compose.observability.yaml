@@ -1,19 +1,73 @@
 # Стек наблюдаемости рядом со стендом:
 #   docker compose -f docker/compose.yaml -f docker/compose.observability.yaml up
-# Prometheus забирает метрики сервиса, Grafana показывает дашборд
-# из observability/grafana/dashboards.
+#
+# Сервис начинает слать трейсы в Tempo, Alloy сливает логи контейнеров в
+# Loki, Tempo отдаёт span-метрики в Prometheus, Grafana собирает всё это
+# в трёх источниках данных. Ни одного платного сервиса.
 services:
+  app:
+    environment:
+      # Появление адреса коллектора включает OTLP-экспорт в самом сервисе
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4318
+      LOG_LEVEL: info
+
   prometheus:
     image: prom/prometheus:v3.15.0
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=24h
+      # Принимать от Tempo span-метрики и экземпляры через remote write
+      - --web.enable-remote-write-receiver
     volumes:
       - ../observability/prometheus:/etc/prometheus:ro
     ports:
       - "9090:9090"
     depends_on:
       - app
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:v3.7.8
+    command:
+      - -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - ../observability/loki:/etc/loki:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:v3.0.3
+    command:
+      - -config.file=/etc/tempo/tempo.yaml
+    volumes:
+      - ../observability/tempo:/etc/tempo:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+      # OTLP от сервиса
+      - "4318:4318"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.20.0
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ../observability/alloy:/etc/alloy:ro
+      # Логи читаются из docker, поэтому сокет нужен именно в read-only
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    ports:
+      - "12345:12345"
+    depends_on:
+      - loki
     restart: unless-stopped
 
   grafana:
@@ -27,5 +81,11 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - prometheus
+      - loki
+      - tempo
     restart: unless-stopped
+
+volumes:
+  loki-data:
+  tempo-data:
+  alloy-data:

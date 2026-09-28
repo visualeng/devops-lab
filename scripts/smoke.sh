@@ -37,4 +37,9 @@ metrics="$(curl -fsS --max-time 5 "${BASE_URL}/metrics")" || fail "не дожд
 echo "${metrics}" | grep -q 'devops_lab_build_info' \
 	|| fail "в /metrics нет devops_lab_build_info"
 
+# /work создаёт дочерний span: если он сломан, трейсы в Tempo будут
+# состоять из одного серверного span'а и разбираться будет не с чем.
+work="$(curl -fsS --max-time 5 "${BASE_URL}/work")" || fail "не дождались /work"
+echo "${work}" | grep -q 'slept_ms' || fail "неожиданный /work: ${work}"
+
 echo "smoke: ок"

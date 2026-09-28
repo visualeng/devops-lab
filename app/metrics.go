@@ -36,7 +36,7 @@ func init() {
 }
 
 // instrument считает запросы и их длительность. Меткой маршрута берётся
-// шаблон из ServeMux ("/api/{id}"), а не сам путь: иначе в метках
+// шаблон из ServeMux ("GET /healthz"), а не сам путь: иначе в метках
 // окажется каждый конкретный id и cardinality взорвётся.
 func instrument(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -45,12 +45,12 @@ func instrument(next http.Handler) http.Handler {
 
 		next.ServeHTTP(recorder, r)
 
-		handler := r.Pattern
-		if handler == "" {
-			handler = "unknown"
-		}
-		httpRequests.WithLabelValues(handler, strconv.Itoa(recorder.status)).Inc()
-		httpDuration.WithLabelValues(handler).Observe(time.Since(started).Seconds())
+		route := routeOf(r)
+		httpRequests.WithLabelValues(route, strconv.Itoa(recorder.status)).Inc()
+		httpDuration.WithLabelValues(route).Observe(time.Since(started).Seconds())
+
+		// Шаблон маршрута известен только сейчас — заодно называем span
+		renameSpan(r, route)
 	})
 }
 
